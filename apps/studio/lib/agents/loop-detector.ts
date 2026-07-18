@@ -35,4 +35,8 @@ export class LoopDetector {
     if (isDuplicate)
       throw new LoopDetectedError("state_cycle", `Repeated state hash ${hash}`);
   }
+
+  get usage(): { steps: number; maxSteps: number; tokens: number; maxTokens: number } {
+    return { steps: this.stepCount, maxSteps: this.config.maxSteps, tokens: this.tokenCount, maxTokens: this.config.maxTokens };
+  }
 }

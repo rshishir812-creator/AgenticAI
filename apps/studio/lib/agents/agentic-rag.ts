@@ -52,6 +52,14 @@ function ts() { return new Date().toISOString(); }
 
 // ── Nodes ──────────────────────────────────────────────────────────────────
 
+function routingEvent(s: S, nodeName: string, routing: Awaited<ReturnType<typeof routeRequest>>) {
+  return {
+    type: "routing_decision", runId: s.runId, nodeName,
+    tier: routing.tier, model: routing.model, reason: routing.reason,
+    complexityScore: routing.complexityScore, timestamp: ts(),
+  };
+}
+
 async function queryRewrite(s: S) {
   const stepId = nanoid(8);
   const routing = await routeRequest(s.question);
@@ -62,6 +70,7 @@ async function queryRewrite(s: S) {
   return {
     rewritten: resp.content.toString().trim(),
     events: [...s.events,
+      routingEvent(s, "query_rewrite", routing),
       { type: "step_started",  runId: s.runId, stepId, nodeName: "query_rewrite", timestamp: ts() },
       { type: "step_finished", runId: s.runId, stepId, nodeName: "query_rewrite", outputPreview: resp.content.toString().slice(0, 80), timestamp: ts() },
     ],
@@ -129,6 +138,7 @@ async function generate(s: S) {
   ]);
   const generation = resp.content.toString();
   return { generation, events: [...s.events,
+    routingEvent(s, "generate", routing),
     { type: "step_started",  runId: s.runId, stepId, nodeName: "generate", timestamp: ts() },
     { type: "step_finished", runId: s.runId, stepId, nodeName: "generate", outputPreview: generation.slice(0, 100), timestamp: ts() },
   ]};
@@ -160,13 +170,40 @@ function afterAnswerGrade(s: S) { return s.answerGrade === "grounded" || s.retry
 
 // ── Compiled graph ─────────────────────────────────────────────────────────
 
-export function buildAgenticRagGraph() {
+/**
+ * Wraps a node function so every node execution also runs it through the
+ * shared LoopDetector — step/token budget check plus a SHA-256 state-cycle
+ * hash check — and emits a "budget_check" event so it's visible in the
+ * trace panel. Previously LoopDetector was only ever constructed, never
+ * invoked: the graph's only real protection against infinite loops was
+ * LangGraph's own generic recursionLimit (25), which fires with a much
+ * less informative error than our own step/token/cycle-specific one.
+ */
+function withBudgetCheck(nodeName: string, detector: LoopDetector, fn: (s: S) => Promise<Partial<S>>) {
+  return async (s: S): Promise<Partial<S>> => {
+    const result = await fn(s);
+    detector.step();
+    detector.checkState({ ...s, ...result, events: undefined });
+    const events = (result.events ?? s.events) as any[];
+    const usage = detector.usage;
+    return {
+      ...result,
+      events: [...events, {
+        type: "budget_check", runId: s.runId, nodeName,
+        stepsUsed: usage.steps, maxSteps: usage.maxSteps,
+        timestamp: ts(),
+      }],
+    };
+  };
+}
+
+export function buildAgenticRagGraph(detector: LoopDetector) {
   return new StateGraph(State)
-    .addNode("query_rewrite", queryRewrite)
-    .addNode("retrieve",      retrieve)
-    .addNode("grade_docs",    gradeDocs)
-    .addNode("generate",      generate)
-    .addNode("grade_answer",  gradeAnswer)
+    .addNode("query_rewrite", withBudgetCheck("query_rewrite", detector, queryRewrite))
+    .addNode("retrieve",      withBudgetCheck("retrieve",      detector, retrieve))
+    .addNode("grade_docs",    withBudgetCheck("grade_docs",    detector, gradeDocs))
+    .addNode("generate",      withBudgetCheck("generate",      detector, generate))
+    .addNode("grade_answer",  withBudgetCheck("grade_answer",  detector, gradeAnswer))
     .addEdge(START, "query_rewrite")
     .addEdge("query_rewrite", "retrieve")
     .addEdge("retrieve", "grade_docs")
@@ -189,7 +226,7 @@ export async function runAgenticRag(
   // Note: the caller (api/run/route.ts) already emits a "run_started" event
   // with its own runId before invoking this function — don't emit a second one.
 
-  const graph = buildAgenticRagGraph();
+  const graph = buildAgenticRagGraph(detector);
 
   try {
     const result = await graph.invoke({

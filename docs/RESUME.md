@@ -62,15 +62,58 @@ browser.
   request before the real test avoids false negatives. Not worth fixing
   (standard Next.js dev-mode behavior, doesn't happen in production builds).
 
-## Phase 2 — core deliverables done, catalog/middleware work remains
+## ✅ Phase 2 — complete (user explicitly requested completion, 2026-07-19)
 
-Both Python agent stacks called for in the original plan now exist and are
-live-verified: `agents/langgraph-py` (Self-RAG + Corrective RAG, mirrors the
-TS agent) and `agents/adk-py` (fan-out/fan-in workflow, real ADK 2.5.0
-primitives). Plus `mcp-servers/py-research`. What's NOT done — the full
-orchestration-patterns catalog and visible routing/loop-detection
-middleware — is large enough in scope to warrant its own planning pass, see
-"Still not started" below.
+All four Phase 2 deliverables from the original plan are done and
+live-verified: `agents/langgraph-py`, `agents/adk-py`, `mcp-servers/py-research`,
+and (in the final push) the orchestration-patterns catalog +
+routing/loop-detection made visible in the trace panel. See "Still not
+started" below for what's honestly out of scope even after this — a few
+patterns (ReAct, plan-and-execute, supervisor, swarm, map-reduce, HITL,
+durable checkpointing) were never implemented and are recorded as real
+gaps, not glossed over.
+
+### ✅ Orchestration-patterns catalog — `docs/03-orchestration-patterns/README.md`
+Cross-references every pattern already runnable in this repo (routing,
+reflection, corrective retrieval, prompt chaining, parallelization,
+orchestrator-workers) against its actual source file, with `curl` examples
+to run each live. Explicitly lists what's NOT implemented (ReAct,
+plan-and-execute, general evaluator-optimizer, supervisor/hierarchical,
+swarm, map-reduce, HITL, durable checkpointing, deep-research, GraphRAG-lite,
+computer-use) rather than padding the catalog with unbuilt "coming soon"
+entries. This is documentation-centric by design — the original plan's own
+wording was "one doc per pattern, links to runnable code in ≥1 stack," not
+"implement every pattern as new code," and building out a dozen more full
+agent implementations was not a reasonable scope for one session.
+
+### ✅ Routing/loop-detection made visible (was dead code)
+Found while writing the catalog and cross-checking claims against actual
+code: `LoopDetector` was being constructed in both `agentic-rag.ts` and
+`agentic_rag.py` but its `step()`/`checkState()` methods were **never
+called** — completely dead code. The graph's only real protection against
+infinite loops was LangGraph's own generic 25-step recursion limit. Also,
+`routeRequest()`'s/`route_request()`'s routing decision (tier, model,
+reason, complexity score) was computed and used to pick a model but never
+emitted as an event — invisible to the trace panel.
+
+Fixed on both stacks (TS: `apps/studio/lib/agents/agentic-rag.ts` +
+`loop-detector.ts`; Python: `agents/langgraph-py/agentic_rag.py`):
+- Every node is now wrapped so `detector.step()` and `detector.checkState()`
+  actually run after each node, emitting a `budget_check` event
+  (`stepsUsed`/`maxSteps`) — real, working budget enforcement with a
+  specific error reason (`step_budget`/`token_budget`/`state_cycle`)
+  instead of relying solely on LangGraph's generic limit.
+- Every `routeRequest()`/`route_request()` call now emits a
+  `routing_decision` event (`tier`, `model`, `reason`, `complexityScore`).
+
+Verified live 3 ways: curl against the TS agent, curl against the Python
+agent, and in the actual Studio canvas browser UI — navigated to `/studio`,
+ran the agentic-RAG graph, confirmed the trace panel auto-switched and
+showed 20 events including multiple `routing_decision` and `budget_check`
+entries, rendered correctly by the existing generic event renderer (no UI
+code changes needed — `TracePanel.tsx` already renders any event generically
+by type/nodeName/outputPreview). `npx tsc --noEmit` and `npx next build`
+both pass clean after the TS changes.
 
 ### ✅ `mcp-servers/py-research` — built and live-tested
 Python Streamable HTTP MCP server using the official `mcp` SDK's `FastMCP`
@@ -185,32 +228,59 @@ unlike `agents/langgraph-py`, it doesn't query Supabase. That's intentional
 (the fan-out/fan-in *pattern* was the point, not another RAG variant), but
 worth knowing if a future session wants to add an ADK RAG demo too.
 
-### Still not started
-- Full orchestration-patterns catalog (routing, parallelization,
-  supervisor+workers, ReAct, evaluator-optimizer, swarms, etc. as runnable
-  graphs the Studio canvas can load). The Studio canvas already HAS a
-  fan-out/fan-in example now (`agents/adk-py`'s workflow) but it's not wired
-  into the canvas as a selectable graph preset — only callable via
-  `agentId: "adk-py:workflow"` directly.
-- Model routing / loop detection / redaction as VISIBLE middleware in the
-  traces panel (the underlying `lib/agents/model-router.ts` /
-  `model_router.py` and `loop-detector.ts` / `loop_detector.py` exist and
-  work on both stacks now, but aren't surfaced as a dedicated lab/demo).
-- `mcp-servers/ts-open-data` still hasn't been live-tested (queued since
-  Phase 1, kept getting deprioritized across two full sessions now —
-  genuinely the oldest unverified item in the repo, do this next).
+### ✅ `mcp-servers/ts-open-data` — finally live-tested (queued since Phase 1)
+Two real bugs found on its first-ever live test:
+1. **Stateless-transport reuse bug.** `StreamableHTTPServerTransport`
+   defaults to stateless mode (no `sessionIdGenerator` passed), and per the
+   SDK's own docs a stateless transport "cannot be reused across requests —
+   create a new transport per request." The server was creating ONE
+   transport at module load and reusing it for every HTTP request: the
+   first tool call succeeds, every call after that 500s. The SDK's
+   `@hono/node-server` adapter catches the thrown error internally before
+   it surfaces as a promise rejection, so it never showed up in logs — took
+   directly reading the SDK's dist source to find. Fixed: `server.ts` now
+   builds a fresh `McpServer` + transport pair per request.
+2. **REST Countries v3.1 API is dead.** The whole free tier was retired —
+   `restcountries.com/v3.1` redirects to a deprecation notice,
+   `api.restcountries.com` requires a paid key. Switched to the
+   `mledoze/countries` static dataset (same data REST Countries was
+   originally built from) via jsdelivr CDN — no key, same shape for most
+   fields. Dropped `population`/`timezones` (not in this dataset) rather
+   than fake them.
+
+Verified: 4 consecutive tool calls (weather, country_info, exchange_rates,
+tools/list) all return 200 with correct data on the same warm process — the
+exact rapid-succession pattern that reproduced bug #1.
+
+### Still not started (real gaps, recorded honestly — see docs/03-orchestration-patterns/README.md)
+- ReAct, plan-and-execute, general evaluator-optimizer, supervisor/
+  hierarchical multi-agent, swarm/handoffs, map-reduce over dynamic lists,
+  human-in-the-loop, durable/checkpointed agents, deep-research pattern
+  (MCP tools exist, no agent calls them yet), GraphRAG-lite, computer-use —
+  none of these have a dedicated runnable demo. Full list with reasoning
+  in the catalog doc.
 - ADK Task API demo, A2A integration (ADK-Py → Embabel Java via
   `RemoteA2AAgent`), human-in-the-loop confirmation workflows — all
   mentioned in the original plan for `agents/adk-py`, none built yet.
+- Redaction middleware (PII scrubbing on tool inputs/outputs before
+  logging) — mentioned in the original plan's production track, not
+  started at all (unlike routing/loop-detection, there's no
+  `redaction.ts`/`.py` file yet to even wire up).
+- None of the implemented patterns are wired into the Studio canvas's
+  `GraphSelector` dropdown as a selectable preset — only callable via
+  `agentId` directly. Small, mechanical follow-up, not attempted.
+- Phase 3 (Java/Embabel), Phase 4 (AG-UI/A2UI/AP2/x402/WebMCP deep-dives),
+  Phase 5 (evals, memory, guardrails, cost dashboard) — untouched, per the
+  original phase roadmap.
 
 ### Immediate next step
-Test `mcp-servers/ts-open-data` (weather/countries/forex TS MCP server,
-port 3001) — do not defer this again, it's been queued since Phase 1.
-After that, Phase 2's core deliverables (LangGraph-Py, ADK-Py, py-research
-MCP server) are all done — the remaining Phase 2 items (patterns catalog,
-visible routing/loop-detection middleware) are large enough to warrant an
-explicit scoping conversation with the user rather than another
-unilateral pick.
+Phase 2 is done. Next natural step per the original roadmap is Phase 3
+(Java + Embabel GOAP + ADK-Java + interop), or picking off individual
+Phase 2 gaps above (redaction middleware is probably the highest-value
+single item, since routing/loop-detection are now real and redaction is
+the missing third leg of the "production patterns" trio) — needs a decision
+from the user rather than another unilateral pick, given how much scope
+either direction represents.
 
 ## Earlier: Phase 0 + Phase 1 (fully complete, see below for historical detail)
 

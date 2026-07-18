@@ -118,6 +118,14 @@ def _graded_bool(system: str, user: str, field: str, default: bool, retries: int
 
 # ── Nodes ────────────────────────────────────────────────────────────────
 
+def _routing_event(s: State, node_name: str, routing: dict) -> dict:
+    return {
+        "type": "routing_decision", "runId": s["run_id"], "nodeName": node_name,
+        "tier": routing["tier"], "model": routing["model"], "reason": routing["reason"],
+        "complexityScore": routing["complexityScore"], "timestamp": _ts(),
+    }
+
+
 def query_rewrite(s: State) -> dict:
     step_id = nanoid(size=8)
     routing = route_request(s["question"])
@@ -129,6 +137,7 @@ def query_rewrite(s: State) -> dict:
     return {
         "rewritten": rewritten,
         "events": s["events"] + [
+            _routing_event(s, "query_rewrite", routing),
             {"type": "step_started", "runId": s["run_id"], "stepId": step_id, "nodeName": "query_rewrite", "timestamp": _ts()},
             {"type": "step_finished", "runId": s["run_id"], "stepId": step_id, "nodeName": "query_rewrite", "outputPreview": rewritten[:80], "timestamp": _ts()},
         ],
@@ -190,6 +199,7 @@ def generate(s: State) -> dict:
     return {
         "generation": generation,
         "events": s["events"] + [
+            _routing_event(s, "generate", routing),
             {"type": "step_started", "runId": s["run_id"], "stepId": step_id, "nodeName": "generate", "timestamp": _ts()},
             {"type": "step_finished", "runId": s["run_id"], "stepId": step_id, "nodeName": "generate", "outputPreview": generation[:100], "timestamp": _ts()},
         ],
@@ -233,13 +243,42 @@ def after_answer_grade(s: State) -> str:
 
 # ── Compiled graph ───────────────────────────────────────────────────────
 
-def build_agentic_rag_graph():
+def _with_budget_check(node_name: str, detector: LoopDetector, fn):
+    """
+    Wraps a node function so every node execution also runs it through the
+    shared LoopDetector — step/token budget check plus a SHA-256 state-cycle
+    hash check — and emits a "budget_check" event so it's visible in the
+    trace panel. Mirrors apps/studio/lib/agents/agentic-rag.ts's
+    withBudgetCheck(), which fixed the same issue on the TS side: LoopDetector
+    was previously only ever constructed, never invoked, so the graph's only
+    real protection against infinite loops was LangGraph's own generic
+    recursion limit.
+    """
+    def wrapped(s: State) -> dict:
+        result = fn(s)
+        detector.step()
+        state_for_hash = {**s, **result}
+        state_for_hash.pop("events", None)
+        detector.check_state(state_for_hash)
+        events = result.get("events", s["events"])
+        return {
+            **result,
+            "events": events + [{
+                "type": "budget_check", "runId": s["run_id"], "nodeName": node_name,
+                "stepsUsed": detector.step_count, "maxSteps": detector.max_steps,
+                "timestamp": _ts(),
+            }],
+        }
+    return wrapped
+
+
+def build_agentic_rag_graph(detector: LoopDetector):
     g = StateGraph(State)
-    g.add_node("query_rewrite", query_rewrite)
-    g.add_node("retrieve", retrieve)
-    g.add_node("grade_docs", grade_docs)
-    g.add_node("generate", generate)
-    g.add_node("grade_answer", grade_answer)
+    g.add_node("query_rewrite", _with_budget_check("query_rewrite", detector, query_rewrite))
+    g.add_node("retrieve", _with_budget_check("retrieve", detector, retrieve))
+    g.add_node("grade_docs", _with_budget_check("grade_docs", detector, grade_docs))
+    g.add_node("generate", _with_budget_check("generate", detector, generate))
+    g.add_node("grade_answer", _with_budget_check("grade_answer", detector, grade_answer))
     g.add_edge(START, "query_rewrite")
     g.add_edge("query_rewrite", "retrieve")
     g.add_edge("retrieve", "grade_docs")
@@ -253,11 +292,11 @@ def build_agentic_rag_graph():
 
 def run_agentic_rag(question: str, on_event, max_steps: int = 15, max_tokens: int = 30_000):
     run_id = nanoid()
-    LoopDetector(max_steps=max_steps, max_tokens=max_tokens, window_size=5)  # reserved for future per-node budget checks
+    detector = LoopDetector(max_steps=max_steps, max_tokens=max_tokens, window_size=5)
 
     on_event({"type": "run_started", "runId": run_id, "agentId": "langgraph-py:agentic-rag", "input": question, "timestamp": _ts()})
 
-    graph = build_agentic_rag_graph()
+    graph = build_agentic_rag_graph(detector)
     try:
         result = graph.invoke({
             "run_id": run_id, "question": question,
