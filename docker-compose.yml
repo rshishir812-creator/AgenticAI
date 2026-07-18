@@ -1,0 +1,99 @@
+version: "3.9"
+
+# ─── Agentic AI Lab — Local Lab Environment ──────────────────────────────────
+# Start everything:  docker-compose up
+# Java only:         docker-compose up embabel adk-java java-mcp
+# DB only:           docker-compose up postgres
+#
+# Env vars are read from .env (copy .env.example → .env and fill in your keys)
+
+services:
+
+  # ── Local Postgres with pgvector (alternative to Supabase cloud) ──────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: agentic
+      POSTGRES_PASSWORD: agentic
+      POSTGRES_DB: agentic_lab
+    ports:
+      - "5433:5432"      # 5433 to avoid clash with local Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentic"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Embabel GOAP Agent (Spring Boot + Embabel) ────────────────────────────
+  embabel:
+    build:
+      context: ./agents/embabel-java
+      dockerfile: Dockerfile
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      A2A_PORT: 8081
+      A2A_AGENT_ID: embabel-goap-v1
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - java
+
+  # ── ADK-Java + A2A Agent ──────────────────────────────────────────────────
+  adk-java:
+    build:
+      context: ./agents/adk-java
+      dockerfile: Dockerfile
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      A2A_PORT: 8082
+      A2A_AGENT_ID: adk-java-v1
+      EMBABEL_A2A_URL: http://embabel:8081
+    ports:
+      - "8082:8082"
+    depends_on:
+      - embabel
+    profiles:
+      - java
+
+  # ── Java MCP Server (Finance Open Data) ──────────────────────────────────
+  java-mcp:
+    build:
+      context: ./mcp-servers/java-finance
+      dockerfile: Dockerfile
+    environment:
+      MCP_PORT: 8083
+    ports:
+      - "8083:8083"
+    profiles:
+      - java
+
+  # ── Python Research MCP Server (local dev alternative to Vercel) ─────────
+  py-mcp:
+    build:
+      context: ./mcp-servers/py-research
+      dockerfile: Dockerfile
+    environment:
+      MCP_PORT: 3002
+    ports:
+      - "3002:3002"
+    profiles:
+      - python
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+    name: agentic-lab-net

@@ -1,0 +1,23 @@
+{
+  "name": "ts-open-data",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Streamable-HTTP MCP server: Open-Meteo weather, REST Countries, Frankfurter FX — zero API keys",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0"
+  }
+}

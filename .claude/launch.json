@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "studio",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "studio", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "mcp-open-data",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "ts-open-data", "dev"],
+      "port": 3001
+    }
+  ]
+}

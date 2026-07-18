@@ -1,0 +1,31 @@
+{
+  "name": "langgraph-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LangGraph.js agents — agentic RAG, orchestration patterns, model routing, loop detection",
+  "type": "module",
+  "exports": {
+    "./agentic-rag": "./src/agentic-rag.ts",
+    "./model-router": "./src/model-router.ts",
+    "./loop-detector": "./src/loop-detector.ts",
+    "./patterns/*": "./src/patterns/*.ts"
+  },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@langchain/langgraph": "^0.2.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/groq": "^0.1.0",
+    "@supabase/supabase-js": "^2.46.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "openai": "^4.67.0",
+    "zod": "^3.23.0",
+    "nanoid": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}
