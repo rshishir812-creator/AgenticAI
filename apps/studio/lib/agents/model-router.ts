@@ -28,7 +28,10 @@ export async function routeRequest(userMessage: string): Promise<RoutingDecision
         { role: "user",   content: userMessage.slice(0, 500) },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 60,
+      // gpt-oss models spend tokens on internal reasoning before emitting the
+      // JSON payload — too low a budget truncates mid-reasoning and Groq
+      // rejects the incomplete JSON with a 400 (json_validate_failed).
+      max_tokens: 300,
       temperature: 0,
     });
     const { score, reason } = JSON.parse(resp.choices[0].message.content ?? "{}");

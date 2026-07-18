@@ -41,7 +41,11 @@ function supabase() {
 }
 
 function llm(model: string) {
-  return new ChatGroq({ model, temperature: 0, apiKey: process.env.GROQ_API_KEY });
+  // groq-sdk (used internally by ChatGroq) appends its own "/openai/v1/..." path
+  // onto baseUrl, so baseUrl must be the bare host — NOT process.env.GROQ_BASE_URL,
+  // which already ends in "/openai/v1" for the raw OpenAI-compatible SDK usage
+  // elsewhere (see model-router.ts). Passing it here would double the path.
+  return new ChatGroq({ model, temperature: 0, apiKey: process.env.GROQ_API_KEY, baseUrl: "https://api.groq.com" });
 }
 
 function ts() { return new Date().toISOString(); }
@@ -71,7 +75,7 @@ async function retrieve(s: S) {
   let docs: any[] = [];
 
   const embedding = await embed(query);
-  const { data } = await db.rpc("match_documents", { query_embedding: embedding, match_count: 5 });
+  const { data } = await db.rpc("match_documents", { query_embedding: embedding, match_threshold: 0.2, match_count: 5 });
   docs = data ?? [];
 
   return {
@@ -86,22 +90,33 @@ async function retrieve(s: S) {
 async function gradeDocs(s: S) {
   const stepId = nanoid(8);
   if (!s.documents.length) {
-    return { docsGrade: "irrelevant" as const, events: [...s.events,
-      { type: "step_started",  runId: s.runId, stepId, nodeName: "grade_docs", timestamp: ts() },
-      { type: "step_finished", runId: s.runId, stepId, nodeName: "grade_docs", outputPreview: "irrelevant (no docs)", timestamp: ts() },
-    ]};
+    return {
+      docsGrade: "irrelevant" as const,
+      retryCount: s.retryCount + 1,
+      events: [...s.events,
+        { type: "step_started",  runId: s.runId, stepId, nodeName: "grade_docs", timestamp: ts() },
+        { type: "step_finished", runId: s.runId, stepId, nodeName: "grade_docs", outputPreview: "irrelevant (no docs)", timestamp: ts() },
+      ],
+    };
   }
-  const ctx = s.documents.map((d, i) => `[${i+1}] ${d.content.slice(0, 300)}`).join("\n\n");
+  // Chunks are already capped at ~800 chars by the ingestion pipeline — no
+  // need to truncate further here, doing so risks cutting the relevant part
+  // of a chunk (e.g. a multi-topic chunk) before the grader ever sees it.
+  const ctx = s.documents.map((d, i) => `[${i+1}] ${d.content}`).join("\n\n");
   const resp = await llm(process.env.GROQ_MODEL_SMALL ?? "openai/gpt-oss-20b").invoke([
-    new SystemMessage('Grade relevance. Return JSON: {"relevant": true|false}'),
+    new SystemMessage('You are a relevance grader. Respond with only a JSON object matching this exact shape: {"relevant": true}. Set "relevant" to true if the documents help answer the question, otherwise false.'),
     new HumanMessage(`Q: ${s.question}\n\nDocs:\n${ctx}`),
   ], { response_format: { type: "json_object" } });
   const { relevant } = JSON.parse(resp.content.toString());
   const grade = relevant ? "relevant" : "irrelevant";
-  return { docsGrade: grade as "relevant" | "irrelevant", events: [...s.events,
-    { type: "step_started",  runId: s.runId, stepId, nodeName: "grade_docs", timestamp: ts() },
-    { type: "step_finished", runId: s.runId, stepId, nodeName: "grade_docs", outputPreview: grade, timestamp: ts() },
-  ]};
+  return {
+    docsGrade: grade as "relevant" | "irrelevant",
+    retryCount: s.retryCount + (relevant ? 0 : 1),
+    events: [...s.events,
+      { type: "step_started",  runId: s.runId, stepId, nodeName: "grade_docs", timestamp: ts() },
+      { type: "step_finished", runId: s.runId, stepId, nodeName: "grade_docs", outputPreview: grade, timestamp: ts() },
+    ],
+  };
 }
 
 async function generate(s: S) {
@@ -121,9 +136,9 @@ async function generate(s: S) {
 
 async function gradeAnswer(s: S) {
   const stepId = nanoid(8);
-  const ctx = s.documents.map((d, i) => `[${i+1}] ${d.content.slice(0, 200)}`).join("\n");
+  const ctx = s.documents.map((d, i) => `[${i+1}] ${d.content}`).join("\n");
   const resp = await llm(process.env.GROQ_MODEL_SMALL ?? "openai/gpt-oss-20b").invoke([
-    new SystemMessage('Grade groundedness. Return JSON: {"grounded": true|false}'),
+    new SystemMessage('You are a groundedness grader. Respond with only a JSON object matching this exact shape: {"grounded": true}. Set "grounded" to true if the answer is fully supported by the context, otherwise false.'),
     new HumanMessage(`Q: ${s.question}\nCtx: ${ctx}\nAnswer: ${s.generation}`),
   ], { response_format: { type: "json_object" } });
   const { grounded } = JSON.parse(resp.content.toString());
@@ -171,7 +186,8 @@ export async function runAgenticRag(
   const runId = nanoid();
   const detector = new LoopDetector({ maxSteps: options.maxSteps ?? 15, maxTokens: options.maxTokens ?? 30_000, windowSize: 5 });
 
-  onEvent({ type: "run_started", runId, agentId: "langgraph-ts:agentic-rag", input: question, timestamp: new Date().toISOString() });
+  // Note: the caller (api/run/route.ts) already emits a "run_started" event
+  // with its own runId before invoking this function — don't emit a second one.
 
   const graph = buildAgenticRagGraph();
 
