@@ -91,6 +91,24 @@ services:
     profiles:
       - python
 
+  # ── LangGraph Python Agent (Agentic RAG, local dev alternative to Vercel) ─
+  langgraph-py:
+    build:
+      context: ./agents/langgraph-py
+      dockerfile: Dockerfile
+    environment:
+      PORT: 8010
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      GROQ_MODEL_SMALL: ${GROQ_MODEL_SMALL:-openai/gpt-oss-20b}
+      GROQ_MODEL_LARGE: ${GROQ_MODEL_LARGE:-openai/gpt-oss-120b}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+    ports:
+      - "8010:8010"
+    profiles:
+      - python
+
 volumes:
   pgdata:
 

@@ -95,27 +95,69 @@ Two non-obvious bugs hit and fixed while building this — documented in
    app or every request 500s with `RuntimeError: Task group is not initialized`.
 2. Wikipedia's API 403s without a descriptive `User-Agent` header.
 
+### ✅ `agents/langgraph-py` — built and fully live-tested end-to-end
+Python mirror of `apps/studio/lib/agents/agentic-rag.ts` — identical
+Self-RAG + Corrective RAG `StateGraph`, same Supabase `documents` table and
+`match_documents` RPC, same Groq models. Embeds with
+`sentence-transformers/all-mpnet-base-v2` (same weights as the TS side's
+ONNX/`Xenova` build, same 768-dim space) via `embeddings.py`, so a query run
+through either stack's agent retrieves the exact same chunks.
+
+Files: `agents/langgraph-py/{agentic_rag.py,model_router.py,loop_detector.py,embeddings.py,app.py,requirements.txt,Dockerfile,README.md}`.
+Run: `cd agents/langgraph-py && pip install -r requirements.txt && python app.py`
+(port 8010). `docker-compose.yml` has a `langgraph-py` service (python
+profile). `apps/studio/app/api/run/route.ts`'s Python-proxy default port was
+wrong (8000, should be 8010) — fixed.
+
+Verified 3 ways:
+1. Direct in-process call to `run_agentic_rag()` — 12 events, grounded answer.
+2. Direct HTTP to the FastAPI `/api/run` SSE endpoint on :8010 — same 12
+   events, correct AG-UI JSON shape.
+3. Through the Studio's own `/api/run` proxy (`localhost:3000/api/run` with
+   `agentId: "langgraph-py:agentic-rag"`) — 3 separate test questions, all
+   completed cleanly, including one that correctly exercised the bounded
+   corrective retry loop (0 docs retrieved twice, `retryCount` hit 2, graph
+   ended cleanly instead of recursing).
+
+One new bug found and fixed, specific to this Python port (did not reproduce
+in the TS version during its own testing): gpt-oss models occasionally emit
+malformed JSON in `response_format=json_object` mode even with a
+well-formed, `true|false`-placeholder-free prompt — this is probabilistic
+(passed on isolated per-node testing, then failed on a subsequent full-graph
+run with the identical prompt), not deterministic. A bare `json.loads()` on
+that response would crash the whole graph run. Fixed with `_graded_bool()` in
+`agentic_rag.py`: retries once, then fails open (defaults to `True`) instead
+of aborting. This is a good general lesson for the docs/production-patterns
+content — JSON mode is not 100% reliable even with a correct prompt, so
+grading/classification nodes should never let a JSON parse failure crash
+the graph.
+
+Both the Studio-side (TS) `run_started` and the proxied Python agent's own
+`run_started` stream through the Studio's `/api/run` proxy — same duplicate-
+event pattern noted and fixed for the in-process TS path, but here it's
+crossing a real service boundary (Next.js route + external Python service),
+so arguably each layer legitimately has its own "run started." Not fixed;
+flagging as a design question for later, not a bug.
+
 ### Still not started
-- `agents/langgraph-py` — Python LangGraph agentic-RAG equivalent of the TS
-  one, FastAPI `/api/run` endpoint, deployed as Vercel Python function. Stub
-  README only, no code yet.
 - `agents/adk-py` — Google ADK 2.0 Python Workflow Runtime demo. Stub README
   only, no code yet.
 - Full orchestration-patterns catalog (routing, parallelization,
   supervisor+workers, ReAct, evaluator-optimizer, swarms, etc. as runnable
   graphs the Studio canvas can load).
 - Model routing / loop detection / redaction as VISIBLE middleware in the
-  traces panel (the underlying `lib/agents/model-router.ts` and
-  `loop-detector.ts` exist and work, but aren't surfaced as a dedicated lab/demo).
+  traces panel (the underlying `lib/agents/model-router.ts` /
+  `model_router.py` and `loop-detector.ts` / `loop_detector.py` exist and
+  work on both stacks now, but aren't surfaced as a dedicated lab/demo).
+- `mcp-servers/ts-open-data` still hasn't been live-tested (queued since
+  Phase 1, kept getting deprioritized — genuinely unverified, do this next).
 
 ### Immediate next step
-Finish `agents/langgraph-py` next — it's the natural continuation (mirrors
-`apps/studio/lib/agents/agentic-rag.ts`, same Supabase tables, same
-`match_documents` RPC, same Groq models) and is what makes the `/api/run`
-route's existing Python-proxy branch (`agentId?.startsWith("langgraph-py:")`
-in `apps/studio/app/api/run/route.ts`) actually work end-to-end for the first
-time. After that: `mcp-servers/ts-open-data` still hasn't been live-tested
-either (was queued before the Phase-2 pivot, still genuinely unverified).
+Test `mcp-servers/ts-open-data` (weather/countries/forex TS MCP server,
+port 3001) — the one item that's been queued the longest without actually
+being touched. Then decide with the user: `agents/adk-py` next, or the
+orchestration-patterns catalog, or wiring routing/loop-detection into a
+visible trace-panel demo.
 
 ## Earlier: Phase 0 + Phase 1 (fully complete, see below for historical detail)
 

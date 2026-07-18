@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
 
         } else if (agentId?.startsWith("langgraph-py:") || agentId?.startsWith("adk-py:")) {
           // Proxy to Python agent
-          const pyUrl = process.env.PYTHON_AGENT_URL ?? "http://localhost:8000";
+          const pyUrl = process.env.PYTHON_AGENT_URL ?? "http://localhost:8010";
           const upstream = await fetch(`${pyUrl}/api/run`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
