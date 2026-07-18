@@ -62,12 +62,15 @@ browser.
   request before the real test avoids false negatives. Not worth fixing
   (standard Next.js dev-mode behavior, doesn't happen in production builds).
 
-## Phase 2 — in progress
+## Phase 2 — core deliverables done, catalog/middleware work remains
 
-User asked to move to Phase 2. Scope was intentionally narrowed to the
-highest-value slice given effort constraints — full scope (ADK-Py, full
-orchestration-patterns catalog, routing/loop-detection/redaction as visible
-trace middleware) is NOT done yet, see "Still not started" below.
+Both Python agent stacks called for in the original plan now exist and are
+live-verified: `agents/langgraph-py` (Self-RAG + Corrective RAG, mirrors the
+TS agent) and `agents/adk-py` (fan-out/fan-in workflow, real ADK 2.5.0
+primitives). Plus `mcp-servers/py-research`. What's NOT done — the full
+orchestration-patterns catalog and visible routing/loop-detection
+middleware — is large enough in scope to warrant its own planning pass, see
+"Still not started" below.
 
 ### ✅ `mcp-servers/py-research` — built and live-tested
 Python Streamable HTTP MCP server using the official `mcp` SDK's `FastMCP`
@@ -139,25 +142,75 @@ crossing a real service boundary (Next.js route + external Python service),
 so arguably each layer legitimately has its own "run started." Not fixed;
 flagging as a design question for later, not a bug.
 
+### ✅ `agents/adk-py` — built and fully live-tested end-to-end
+Real Google ADK 2.5.0 workflow: `SequentialAgent` wrapping a `ParallelAgent`
+(two sub-agents — `technical_analyst`, `tradeoffs_analyst` — analyze the
+question **concurrently**) followed by a `synthesizer` step that combines
+both. This is the ADK-native version of the "supervisor delegates to
+workers, then synthesizes" pattern.
+
+**Key decision:** ADK's native `LlmAgent` defaults to Gemini; reaching Groq
+requires the `LiteLlm` wrapper, which needs the `google-adk[extensions]`
+extra, which pulls in `litellm`, which **ships no prebuilt wheel and
+requires a Rust/Cargo toolchain to build from source** on this environment.
+Installing a Rust toolchain just for one Python package is a heavy,
+environment-modifying action — deliberately avoided. Instead:
+`agents/adk-py/groq_agent.py` defines `GroqAgent(BaseAgent)`, a custom ADK
+agent that calls Groq directly via the raw `openai` SDK (same pattern as
+`agents/langgraph-py/model_router.py`). This still exercises ADK's *real*
+`BaseAgent`/`SequentialAgent`/`ParallelAgent` orchestration primitives — the
+actual teaching point — without the LiteLLM/Rust dependency chain. This
+tradeoff is documented in `agents/adk-py/README.md` and should NOT be
+re-investigated as "unfinished work" — it's a deliberate, reasoned choice.
+
+Files: `agents/adk-py/{groq_agent.py,workflow.py,app.py,requirements.txt,Dockerfile,README.md}`.
+Run: `cd agents/adk-py && pip install -r requirements.txt && python app.py`
+(port 8020). `docker-compose.yml` has an `adk-py` service (python profile).
+
+Studio wiring: `apps/studio/app/api/run/route.ts`'s Python-proxy branch used
+to route BOTH `langgraph-py:` and `adk-py:` agentIds to the same
+`PYTHON_AGENT_URL` — wrong, since they're two independent services on
+different ports. Split into `PYTHON_AGENT_URL` (8010, langgraph-py) and
+`ADK_PY_AGENT_URL` (8020, adk-py), documented in `.env.example`. Confirmed
+`npx next build` still compiles clean after the change.
+
+Verified 3 ways, same as langgraph-py: direct `Runner.run_async()` call,
+direct HTTP to the FastAPI SSE endpoint, and through the Studio's `/api/run`
+proxy — all three show `technical_analyst` and `tradeoffs_analyst` starting
+at the identical timestamp (genuine concurrency, not sequential-pretending-
+to-be-parallel) followed by `synthesizer`.
+
+Scope note: this workflow demo is pure reasoning, NOT retrieval-grounded —
+unlike `agents/langgraph-py`, it doesn't query Supabase. That's intentional
+(the fan-out/fan-in *pattern* was the point, not another RAG variant), but
+worth knowing if a future session wants to add an ADK RAG demo too.
+
 ### Still not started
-- `agents/adk-py` — Google ADK 2.0 Python Workflow Runtime demo. Stub README
-  only, no code yet.
 - Full orchestration-patterns catalog (routing, parallelization,
   supervisor+workers, ReAct, evaluator-optimizer, swarms, etc. as runnable
-  graphs the Studio canvas can load).
+  graphs the Studio canvas can load). The Studio canvas already HAS a
+  fan-out/fan-in example now (`agents/adk-py`'s workflow) but it's not wired
+  into the canvas as a selectable graph preset — only callable via
+  `agentId: "adk-py:workflow"` directly.
 - Model routing / loop detection / redaction as VISIBLE middleware in the
   traces panel (the underlying `lib/agents/model-router.ts` /
   `model_router.py` and `loop-detector.ts` / `loop_detector.py` exist and
   work on both stacks now, but aren't surfaced as a dedicated lab/demo).
 - `mcp-servers/ts-open-data` still hasn't been live-tested (queued since
-  Phase 1, kept getting deprioritized — genuinely unverified, do this next).
+  Phase 1, kept getting deprioritized across two full sessions now —
+  genuinely the oldest unverified item in the repo, do this next).
+- ADK Task API demo, A2A integration (ADK-Py → Embabel Java via
+  `RemoteA2AAgent`), human-in-the-loop confirmation workflows — all
+  mentioned in the original plan for `agents/adk-py`, none built yet.
 
 ### Immediate next step
 Test `mcp-servers/ts-open-data` (weather/countries/forex TS MCP server,
-port 3001) — the one item that's been queued the longest without actually
-being touched. Then decide with the user: `agents/adk-py` next, or the
-orchestration-patterns catalog, or wiring routing/loop-detection into a
-visible trace-panel demo.
+port 3001) — do not defer this again, it's been queued since Phase 1.
+After that, Phase 2's core deliverables (LangGraph-Py, ADK-Py, py-research
+MCP server) are all done — the remaining Phase 2 items (patterns catalog,
+visible routing/loop-detection middleware) are large enough to warrant an
+explicit scoping conversation with the user rather than another
+unilateral pick.
 
 ## Earlier: Phase 0 + Phase 1 (fully complete, see below for historical detail)
 

@@ -109,6 +109,21 @@ services:
     profiles:
       - python
 
+  # ── ADK Python Agent (fan-out/fan-in workflow demo, local dev alt to Vercel) ─
+  adk-py:
+    build:
+      context: ./agents/adk-py
+      dockerfile: Dockerfile
+    environment:
+      PORT: 8020
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      GROQ_MODEL_LARGE: ${GROQ_MODEL_LARGE:-openai/gpt-oss-120b}
+    ports:
+      - "8020:8020"
+    profiles:
+      - python
+
 volumes:
   pgdata:
 
