@@ -2,52 +2,22 @@
 
 _Last session paused: 2026-07-19 (mid Phase-1 live end-to-end testing). Read this first before continuing._
 
-## 🚨 BLOCKING — do this FIRST, before anything else
+## ✅ RESOLVED — git history was rewritten and pushed
 
-**Local commits are NOT pushed to GitHub.** `git push origin main` was rejected
-by GitHub secret-scanning push protection:
+The earlier leaked-key issue (Groq API key committed in `.env.example` in the
+first commit) is fixed. Per explicit user instruction, the key was **not**
+rotated — instead, local git history was rewritten: `git reset --soft 3f483c5`
+(back to the empty "Initial commit", which was the only commit ever on
+`origin/main`) then everything re-committed as a single clean commit
+(`c337dd2`) with the sanitized `.env.example`. Verified no secrets in the
+staged diff before committing. Pushed successfully:
+`3f483c5..c337dd2 main -> main`. Repo is live at
+https://github.com/rshishir812-creator/AgenticAI with clean history.
 
-```
-remote: - GITHUB PUSH PROTECTION
-remote:   Groq API Key — commit 400e6591c6fdd1bf2a474b99eb4b593b4107ca7c, path .env.example:2
-```
+The real Groq key and Supabase credentials remain unchanged in `.env` /
+`apps/studio/.env.local` (both gitignored, never touch these).
 
-Root cause: the very first commit (`400e659`, "feat: Phase 0+1...") accidentally
-included the user's real Groq API key in `.env.example` (user had pasted their
-real key into that file before asking Claude to build the repo). A later commit
-(`e8aceae`) sanitized the file back to placeholders, but **the secret is still
-present in git history** at the earlier commit, which is what GitHub's scanner
-flags — sanitizing the current file isn't enough.
-
-4 local commits are queued and unpushed: `400e659`, `e8aceae`, `346384e`, `5133932`.
-
-### Recommended fix (needs user sign-off — do not do silently)
-1. **Rotate the Groq API key first** — treat it as compromised since it was
-   committed to git (even though not yet pushed publicly, it's in local repo
-   history and was pasted into a chat transcript). Get a new key from
-   https://console.groq.com/keys, update `.env` and `apps/studio/.env.local`
-   with the new key.
-2. **Then rewrite git history to scrub the old key** before pushing. Options,
-   ask the user which they prefer:
-   - (a) Simplest: since nothing is pushed yet, `git reset --soft` back before
-     `400e659`, then re-commit everything as a single clean commit (loses the
-     4-commit granularity but is simplest and safest).
-   - (b) `git filter-repo` or `git filter-branch` to scrub the secret from
-     `400e659` specifically while preserving commit history — more complex,
-     more risk of mistakes.
-   - (c) Use the GitHub-provided "allow this secret" unblock URL from the push
-     error (only if the user is fine with the old exposed key existing in
-     public history forever — NOT recommended since it defeats the purpose of
-     rotating).
-   Given this is a fresh local-only repo with no other collaborators and
-   nothing pushed yet, **option (a) is almost certainly the right call** —
-   confirm with the user, then execute.
-3. Re-verify `.env.example` has zero real secrets (grep for `gsk_`, `eyJ`, real
-   URLs) before the new push.
-4. `git push origin main`.
-
-Everything below this point assumes the push is unblocked and describes the
-Phase 1 feature-level work in progress.
+Everything below this point describes the Phase 1 feature-level work in progress.
 
 ## Where things stand
 
