@@ -85,7 +85,7 @@ services:
       context: ./mcp-servers/py-research
       dockerfile: Dockerfile
     environment:
-      MCP_PORT: 3002
+      PORT: 3002
     ports:
       - "3002:3002"
     profiles:

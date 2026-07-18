@@ -62,22 +62,62 @@ browser.
   request before the real test avoids false negatives. Not worth fixing
   (standard Next.js dev-mode behavior, doesn't happen in production builds).
 
-## Immediate next steps
+## Phase 2 — in progress
 
-1. Test `mcp-servers/ts-open-data` — start it
-   (`pnpm --filter ts-open-data dev`, port 3001), confirm `/health` and
-   `/.well-known/agent-card.json` respond, and at least one tool call
-   round-trips (e.g. weather for a city). This has NOT been tested yet this
-   session or prior ones — genuinely unverified.
-2. Optional cleanup: delete the orphan `documents` row with `source = 'test'`
-   and no embedding (`DELETE FROM documents WHERE source = 'test';` in
-   Supabase SQL editor) — harmless leftover from schema-mismatch debugging.
-3. Once MCP server is verified, decide with the user whether to start
-   **Phase 2**: Python agents (LangGraph-Py + Google ADK 2.0 on Vercel
-   functions), the full orchestration-patterns catalog, `mcp-servers/py-research`.
-4. Push this session's commits (`510ec27` and any after) to
-   `origin/main` — check `git status`/`git log origin/main..HEAD` first,
-   these have likely NOT been pushed yet as of session pause.
+User asked to move to Phase 2. Scope was intentionally narrowed to the
+highest-value slice given effort constraints — full scope (ADK-Py, full
+orchestration-patterns catalog, routing/loop-detection/redaction as visible
+trace middleware) is NOT done yet, see "Still not started" below.
+
+### ✅ `mcp-servers/py-research` — built and live-tested
+Python Streamable HTTP MCP server using the official `mcp` SDK's `FastMCP`
+(`stateless_http=True`). Three tools:
+- `wikipedia_search` — ✅ verified live (real API call, real response)
+- `hackernews_search` — ✅ verified live (Algolia HN Search API, real response)
+- `arxiv_search` — code verified correct (https fixed from a 301-redirecting
+  http URL; XML-parsing logic validated against a canned sample response) but
+  NOT re-verified against the live API — arXiv's own rate limiter
+  (~1 req/3s) was still returning `Rate exceeded.` when the session paused,
+  triggered by my own rapid test retries. This will clear on its own; just
+  do ONE clean test next session, don't hammer it.
+
+Files: `mcp-servers/py-research/{server.py,tools.py,requirements.txt,Dockerfile,README.md}`.
+Run: `cd mcp-servers/py-research && pip install -r requirements.txt && python server.py`
+(port 3002). `docker-compose.yml`'s `py-mcp` service now has a working
+Dockerfile (was referenced but missing before).
+
+Two non-obvious bugs hit and fixed while building this — documented in
+`mcp-servers/py-research/README.md`'s "Teaching points" section:
+1. `FastMCP.streamable_http_app()`'s session-manager lifespan doesn't
+   propagate when you `Mount()` it inside a different outer Starlette app
+   (needed to add `/health` + agent-card routes alongside `/mcp`) — must wire
+   `lifespan=lambda _app: mcp.session_manager.run()` explicitly on the outer
+   app or every request 500s with `RuntimeError: Task group is not initialized`.
+2. Wikipedia's API 403s without a descriptive `User-Agent` header.
+
+### Still not started
+- `agents/langgraph-py` — Python LangGraph agentic-RAG equivalent of the TS
+  one, FastAPI `/api/run` endpoint, deployed as Vercel Python function. Stub
+  README only, no code yet.
+- `agents/adk-py` — Google ADK 2.0 Python Workflow Runtime demo. Stub README
+  only, no code yet.
+- Full orchestration-patterns catalog (routing, parallelization,
+  supervisor+workers, ReAct, evaluator-optimizer, swarms, etc. as runnable
+  graphs the Studio canvas can load).
+- Model routing / loop detection / redaction as VISIBLE middleware in the
+  traces panel (the underlying `lib/agents/model-router.ts` and
+  `loop-detector.ts` exist and work, but aren't surfaced as a dedicated lab/demo).
+
+### Immediate next step
+Finish `agents/langgraph-py` next — it's the natural continuation (mirrors
+`apps/studio/lib/agents/agentic-rag.ts`, same Supabase tables, same
+`match_documents` RPC, same Groq models) and is what makes the `/api/run`
+route's existing Python-proxy branch (`agentId?.startsWith("langgraph-py:")`
+in `apps/studio/app/api/run/route.ts`) actually work end-to-end for the first
+time. After that: `mcp-servers/ts-open-data` still hasn't been live-tested
+either (was queued before the Phase-2 pivot, still genuinely unverified).
+
+## Earlier: Phase 0 + Phase 1 (fully complete, see below for historical detail)
 
 ## Reference: full original plan
 See `C:\Users\Shishir\.claude\plans\create-a-plan-to-valiant-parnas.md` for the
